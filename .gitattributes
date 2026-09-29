@@ -1,0 +1,9 @@
+# Files that are copied into Linux images must keep LF endings regardless of
+# the platform they are checked out on. A CRLF shebang makes the kernel look
+# for an interpreter named "/bin/sh\r", so the script fails to exec and the
+# container healthcheck never passes.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+.env text eol=lf

@@ -1,0 +1,91 @@
+services:
+    postgresql:
+        build: ./imageSrc/db
+        restart: "unless-stopped"
+        environment:
+            # Internal database credentials. Fixed on purpose: they are an
+            # implementation detail of the bundled DB (not exposed to the host)
+            # and must stay in sync with the connector's SOVITY_JDBC_* below.
+            - POSTGRES_USER=edc
+            - POSTGRES_PASSWORD=edc
+            - POSTGRES_DB=edc
+        volumes:
+            # Postgres stores its data cluster in /var/lib/postgresql/data (image default).
+            - VOLUME_SOVITY_DB_DATA:/var/lib/postgresql/data
+        networks:
+            - connectorServices
+        healthcheck:
+            # Script baked into the image (see imageSrc/db). Running it as a file
+            # keeps it immune to the platform's variable substitution over the
+            # compose: it expands POSTGRES_USER/DB from the container environment.
+            test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+            interval: 10s
+            timeout: 5s
+            retries: 15
+            start_period: 20s
+
+    sovity-edc:
+        build: ./imageSrc/connector
+        env_file:
+            - .env
+        restart: "unless-stopped"
+        environment:
+            - WEB_HTTP_DEFAULT_PORT=11000
+            - WEB_HTTP_CONTROL_PORT=11001
+            - WEB_HTTP_MANAGEMENT_PORT=11002
+            - WEB_HTTP_PROTOCOL_PORT=11003
+            # Datasource wiring to the bundled 'postgresql' service. Fixed on
+            # purpose and kept in sync with the POSTGRES_* values above.
+            - SOVITY_JDBC_URL=jdbc:postgresql://postgresql:5432/edc
+            - SOVITY_JDBC_USER=edc
+            - SOVITY_JDBC_PASSWORD=edc
+        ports:
+            - "${SOVITY_MANAGEMENT_API_PORT}:11002"
+            - "${SOVITY_DATASPACE_API_PORT}:11003"
+        depends_on:
+            postgresql:
+                condition: service_healthy
+        networks:
+            - connectorServices
+        healthcheck:
+            # EDC observability health endpoint on the default web context
+            # (port 11000). The image ships wget (no curl); this endpoint needs
+            # no API key and returns isSystemHealthy. Use 127.0.0.1 (not
+            # localhost) so wget does not try IPv6 ::1, where nothing listens.
+            test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:11000/api/check/health"]
+            interval: 10s
+            timeout: 5s
+            retries: 15
+            start_period: 45s
+
+    sovity-edc-ui:
+        build: ./imageSrc/ui
+        env_file:
+            - .env
+        restart: "unless-stopped"
+        ports:
+            - "${SOVITY_UI_API_PORT}:8080"
+        depends_on:
+            sovity-edc:
+                condition: service_healthy
+        networks:
+            - connectorServices
+        healthcheck:
+            # The v16 UI image ships neither wget nor curl, only node. Use 127.0.0.1
+            # (not localhost): the server listens on IPv4 0.0.0.0 only, and localhost
+            # resolves to IPv6 ::1 first, causing "Connection refused".
+            test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+
+networks:
+    connectorServices:
+        driver: bridge
+        name: connectorServices
+
+volumes:
+    VOLUME_SOVITY_DB_DATA:
+        name: VOLUME_SOVITY_DB_DATA
+        driver: local
